@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Hangar.Api/Hangar.Api.csproj" />
+    <Project Path="src/Hangar.Application/Hangar.Application.csproj" />
+    <Project Path="src/Hangar.Domain/Hangar.Domain.csproj" />
+    <Project Path="src/Hangar.Infrastructure/Hangar.Infrastructure.csproj" />
+  </Folder>
+</Solution>

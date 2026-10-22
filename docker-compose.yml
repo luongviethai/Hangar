@@ -1,0 +1,28 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: hangar-postgres
+    environment:
+      POSTGRES_DB: hangar_db
+      POSTGRES_USER: hangar_user
+      POSTGRES_PASSWORD: hangar_dev_password
+      TZ: Asia/Ho_Chi_Minh
+    ports:
+      # Project 1 (CRM) đã chiếm 5435 trên máy dev này — map Hangar ra cổng khác để chạy song
+      # song được cả 2 project cùng lúc.
+      - "5436:5432"
+    volumes:
+      - hangar-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hangar_user -d hangar_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Service "api" sẽ bật ở tuần cuối (tương tự Ngày 21 của CRM), build từ docker/Dockerfile,
+  # cùng network với postgres.
+
+volumes:
+  hangar-postgres-data:
+    name: hangar-postgres-data
