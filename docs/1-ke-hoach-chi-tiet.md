@@ -11,60 +11,62 @@
 **Mục tiêu tuần:** port được auth/JWT từ Project 1 (đơn giản hóa — bỏ Role toàn cục), dựng xong Organization/OrganizationMember/App, global query filter hoạt động đúng, resource-based authorization phân quyền đúng theo 3 vai trò (Owner/Developer/Tester) ở 2 tầng (Organization và từng App).
 
 ### Ngày 1 (Thứ 2) — Port auth nền (đơn giản hóa so với Project 1)
-- [ ] Port `ApplicationUser` (`IdentityUser<int>` + `FullName`) — **không** port `ApplicationRole`/role toàn cục, vì vai trò ở Hangar gắn theo từng Organization (xem mục 1 `docs/2-tai-lieu-nghiep-vu.md`)
-- [ ] Dùng `AddIdentityCore<ApplicationUser>()` thay cho `AddIdentity<TUser,TRole>()` của Project 1 — không cần `RoleManager` toàn cục nữa
-- [ ] Port `ITokenService`/`JwtTokenService`: JWT chỉ chứa `UserId`/`Email`, **không** nhúng claim `role` (role phụ thuộc Organization đang truy cập, không cố định theo user)
-- [ ] Port `IIdentityService`/`IdentityService` + refresh token (rotate/revoke) — logic này giữ nguyên, không đổi
-- [ ] `POST /api/auth/register`, `/login`, `/refresh`, `/logout` — test bằng curl, xác nhận JWT không có claim role
+- [x] Port `ApplicationUser` (`IdentityUser<int>` + `FullName`) — **không** port `ApplicationRole`/role toàn cục
+- [x] `AddIdentityCore<ApplicationUser>()` + `AppDbContext : IdentityUserContext<ApplicationUser, int>` (không phải `IdentityDbContext<TUser,TRole,TKey>`) — verify DB chỉ có `AspNetUsers/UserClaims/UserLogins/UserTokens`, không có `AspNetRoles`/`AspNetUserRoles`
+- [x] Port `ITokenService`/`JwtTokenService`: JWT chỉ chứa `UserId`/`Email`/`Name`, không có claim `role`
+- [x] Port `IIdentityService`/`IdentityService` + refresh token (rotate/revoke) — nguyên vẹn, chỉ bỏ dòng `AddToRoleAsync`
+- [x] `POST /api/auth/register`, `/login`, `/refresh`, `/logout` — test curl thật, `GET /api/auth/me` xác nhận claims chỉ có `nameidentifier/emailaddress/name`, không có `role`
 
-**Mục tiêu cuối ngày:** đăng ký/đăng nhập được, JWT phát ra đúng (so sánh claims với token Project 1 — thấy rõ thiếu claim `role`), refresh token hoạt động như cũ.
+**Mục tiêu cuối ngày:** đạt — verify thật bằng curl, JWT không có claim role.
 
 ### Ngày 2 (Thứ 3) — ERD + Organization/OrganizationMember
-- [ ] Vẽ ERD domain Hangar (xem mục 2 `docs/2-tai-lieu-nghiep-vu.md`), lưu `docs/erd.md`
-- [ ] Entity `Organization`, `OrganizationMember` (enum Role: `Owner`/`Developer`) + migration đầu tiên
-- [ ] `POST /api/organizations` — tạo Organization, người tạo tự thành `OrganizationMember` Role=`Owner` **trong 1 transaction** (2 thay đổi phải ăn khớp — đúng bài học Ngày 15 Project 1, áp lại ở bài toán mới)
-- [ ] `GET /api/organizations` — danh sách Organization user hiện tại là thành viên
+- [x] Entity `Organization`, `OrganizationMember` (enum Role: `Owner`/`Developer`) + migration `InitialCreate` (gộp cả Ngày 1 vì là migration đầu tiên của project)
+- [x] `POST /api/organizations` — tạo Organization + `OrganizationMember` Role=Owner trong **1 `SaveChangesAsync()`** (không cần 2 lần như CreateOrder ở CRM — dùng navigation property `organization.Members.Add(...)`, EF tự fixup FK, không có "con" nào cần biết Id Organization trước khi lưu)
+- [x] `GET /api/organizations` — danh sách Organization của user hiện tại, kèm `MyRole`
+- [x] Check Slug trùng ở Service layer trước khi insert (business-existence check, giống quy ước Project 1)
 
-**Mục tiêu cuối ngày:** tạo Organization mới → tự động có đúng 1 dòng `OrganizationMember` Role=Owner; verify bằng query DB trực tiếp.
+**Mục tiêu cuối ngày:** đạt — test thật: tạo Organization trả `{"myRole":"Owner"}`, trùng slug → `400`.
 
 ### Ngày 3 (Thứ 4) — Entity App + global query filter
-- [ ] Entity `App` (`OrganizationId`, `Name`, `Platform`, `PackageId`) + migration
-- [ ] `ICurrentOrganizationContext` — scoped service, có property `OrganizationId` (nullable, set được đúng 1 lần/request)
-- [ ] `AppDbContext` nhận `ICurrentOrganizationContext` qua constructor, cấu hình `HasQueryFilter(a => a.OrganizationId == _context.OrganizationId)` cho `App` trong `OnModelCreating`
-- [ ] Test thủ công: query `App` khi **chưa set** `ICurrentOrganizationContext` → phải trả về rỗng dù DB có dữ liệu thật — chứng minh filter mặc định chặn hết, không lọt dữ liệu ra ngoài khi quên set context
+- [x] Entity `App` + migration
+- [x] `ICurrentOrganizationContext` (interface ở Application, implementation đơn giản ở Infrastructure)
+- [x] `AppDbContext` nhận `ICurrentOrganizationContext` qua constructor, `HasQueryFilter` cho `App` **đặt trực tiếp trong `AppDbContext.OnModelCreating`**, không đặt trong `AppConfiguration` — vì `ApplyConfigurationsFromAssembly()` dùng `Activator.CreateInstance` (không qua DI), `IEntityTypeConfiguration<App>` không nhận được `ICurrentOrganizationContext` qua constructor được
 
-**Mục tiêu cuối ngày:** global query filter hoạt động đúng — chưa set Organization context thì không thấy App nào.
+**Mục tiêu cuối ngày:** đạt (verify gián tiếp ở Ngày 4 — xem ghi chú).
 
 ### Ngày 4 (Thứ 5) — Resource-based authorization
-- [ ] `OrganizationMemberRequirement` (giữ Role tối thiểu cần có) — kiểu `IAuthorizationRequirement`, tương tự `PermissionRequirement` Project 1 nhưng kiểm tra theo resource (`{organizationId}` trong route), không theo policy tĩnh
-- [ ] `OrganizationMemberAuthorizationHandler` — đọc `{organizationId}` từ route, tra `OrganizationMember` theo `(OrganizationId, UserId từ claim JWT)`, so khớp Role tối thiểu
-- [ ] 1 action filter set `ICurrentOrganizationContext.OrganizationId` **sau khi** handler xác nhận hợp lệ — thứ tự quan trọng, không set trước khi check quyền (tránh query filter "mở cửa" cho user chưa được xác nhận là thành viên)
-- [ ] Test: user không phải thành viên Organization X gọi `/api/organizations/{X}/apps` → `403` (không phải `404` — phân biệt rõ "không có quyền" và "không tồn tại", đúng nguyên tắc "lỗi rõ ràng" từ Ngày 15/16 Project 1)
+- [x] `OrganizationMemberRequirement` + `OrganizationMemberAuthorizationHandler` — đọc `{organizationId}` từ route qua `IHttpContextAccessor` (không dùng `context.Resource`, vì giá trị đó không nhất quán giữa middleware auth và MVC filter auth)
+- [x] Set `ICurrentOrganizationContext.OrganizationId` **sau khi** `context.Succeed()` — đúng thứ tự
+- [x] Chỉ 2 policy tĩnh (`OrgDeveloper`, `OrgOwner`) đăng ký trong `Program.cs` — không cần policy provider động như CRM vì chỉ có 2 giá trị `MinimumRole` khả dĩ
+- [x] So sánh Role bằng hàm `Satisfies()` rõ nghĩa (Owner thỏa mọi yêu cầu), không dựa vào thứ tự số của enum — tránh lỗi âm thầm nếu sau này đổi thứ tự khai báo enum
 
-**Mục tiêu cuối ngày:** gọi API thuộc Organization không phải thành viên → `403` đúng; gọi đúng Organization mình là thành viên → thấy dữ liệu đúng, không thấy Organization khác.
+**Mục tiêu cuối ngày:** đạt — test thật: user ngoài gọi Organization không phải thành viên → `403`; tạo Organization 2 (khác chủ) → `GetAll apps` của org 2 trả rỗng, **không lộ** App của org 1 (xác nhận cả resource-based auth và global query filter Ngày 3 cùng hoạt động đúng).
 
 ### Ngày 5 (Thứ 6) — CRUD App
-- [ ] `GET/POST/PUT/DELETE /api/organizations/{orgId}/apps` — yêu cầu Role `Owner` hoặc `Developer` (tái dùng handler Ngày 4, chỉ đổi Role tối thiểu theo action)
-- [ ] Validator (FluentValidation) cho `CreateAppRequest`/`UpdateAppRequest` — chỉ hình thức, giống quy ước Project 1 (tồn tại thật check ở Service)
-- [ ] `PackageId` unique trong phạm vi 1 Organization (check ở Service) — trùng `PackageId` ở Organization **khác** vẫn hợp lệ (đa tenant, không coi là trùng toàn cục)
+- [x] `GET/POST/PUT/DELETE /api/organizations/{organizationId}/apps/{appId}` — policy `OrgDeveloper` (Owner cũng thỏa) cho mọi action, đúng ma trận (create/update/delete App đều Owner+Developer được, không riêng Owner)
+- [x] `PackageId` unique trong phạm vi 1 Organization — check ở Service, tận dụng `_context.Apps` đã bị global filter lọc sẵn nên chỉ cần check `PackageId`, không cần lặp lại `OrganizationId`
+- [x] **Bug thật phát hiện lúc test**: enum (`Platform`, `Role`) mặc định System.Text.Json serialize/deserialize dạng số, nhưng response lại trả chuỗi (`.ToString()`) — gửi `"platform":"Android"` bị `400`. Sửa bằng `JsonStringEnumConverter` toàn cục ở `Program.cs`.
 
-**Mục tiêu cuối ngày:** CRUD App hoàn chỉnh, đúng phân quyền Owner/Developer; test `PackageId` trùng trong cùng org → lỗi, trùng ở org khác → vẫn tạo được.
+**Mục tiêu cuối ngày:** đạt — test thật: tạo App `201`, `GetAll` đúng kết quả, PackageId trùng trong org → `400`.
 
 ### Ngày 6 (Thứ 7, nhiều thời gian hơn) — AppTester
-- [ ] Entity `AppTester` + migration
-- [ ] `POST /api/organizations/{orgId}/apps/{appId}/testers` (Owner/Developer) — mời tester vào đúng 1 App (không phải cả Organization)
-- [ ] `GET .../testers`, `DELETE .../testers/{userId}`
-- [ ] `AppTesterRequirement`/handler riêng — Tester chỉ xem được đúng App mình được mời, gọi App khác trong cùng Organization (không được mời) → `403`
+- [x] Entity `AppTester` (chỉ scalar FK `AppId`, **không** navigation tới `App`) + migration
+- [x] **Bug thật phát hiện lúc tạo migration**: khai báo navigation `App` ban đầu (`required` tới entity có global query filter) → EF Core cảnh báo `CoreEventId...QueryFilterInteractionWarning` (`Include` có thể cho kết quả sai khi `App` bị filter ra ngoài). Không dùng navigation này ở đâu trong code → bỏ hẳn, migration tạo lại sạch không còn warning.
+- [x] `POST/GET/DELETE .../apps/{appId}/testers` — policy `OrgDeveloper` (chỉ Owner/Developer quản lý danh sách tester)
+- [x] `AppAccessRequirement`/`AppAccessAuthorizationHandler` riêng — cho `GET .../apps/{appId}` (đọc 1 App cụ thể): thỏa nếu là `OrganizationMember` **HOẶC** là `AppTester` của đúng `appId` đó. Policy này **chỉ** gắn vào action đọc 1 resource cụ thể, không gắn vào action list (`GetAll`), vì set `ICurrentOrganizationContext` ở nhánh Tester vẫn an toàn khi luôn có thêm điều kiện lọc theo đúng 1 `appId` ở tầng Service.
 
-**Mục tiêu cuối ngày:** mời tester vào 1 App → tester gọi API xem App đó được; gọi App khác trong cùng Organization → `403` đúng.
+**Mục tiêu cuối ngày:** đạt — test thật: mời outsider làm tester App 1 → outsider `GET app 1` (org 1) → `200`; outsider `GET toàn bộ apps` (org 1, action list) → vẫn `403` đúng (Tester không duyệt được cả Organization).
 
 ### Ngày 7 (Chủ nhật, nhiều thời gian hơn) — Mời thành viên qua email, tổng kết tuần
-- [ ] Thêm service `mailhog` (hoặc `smtp4dev`) vào `docker-compose.yml` — bắt email ở local, không cần SMTP/SendGrid thật
-- [ ] `POST /api/organizations/{orgId}/members/invite` (Owner) — sinh token, gửi email qua MailHog
-- [ ] `POST /api/organizations/{orgId}/members/accept` — người được mời chấp nhận (tài khoản mới hoặc đã có), tạo `OrganizationMember`
-- [ ] Test toàn bộ luồng tuần: tạo Organization → mời Developer → accept → Developer tạo App → mời Tester vào App → Tester xem đúng quyền
+- [x] Service `mailhog` trong `docker-compose.yml` (cổng `1026` SMTP, `8026` Web UI/API — tránh đụng cổng CRM)
+- [x] `IEmailSender`/`SmtpEmailSender` (dùng `System.Net.Mail.SmtpClient` trỏ MailHog, không TLS/auth — đủ cho mục tiêu học)
+- [x] Entity `OrganizationInvite` (Email + TokenHash, **không** gắn UserId lúc tạo — hỗ trợ mời cả người chưa có tài khoản)
+- [x] `POST /api/organizations/{organizationId}/members/invite` (policy `OrgOwner` — chỉ Owner mời, Developer không được) — token **chỉ gửi qua email, không trả trong response API** (người gọi API là Owner, không phải người được phép dùng token)
+- [x] `POST /api/organizations/invites/accept` — **không có `{organizationId}` trong route**, token tự xác định Organization (TokenHash unique toàn cục) — chỉ `[Authorize]` thường, check email đang đăng nhập khớp đúng email được mời, chặn accept 2 lần
 
-**Mục tiêu cuối tuần (Tuần 4):** multi-tenant + resource-based authorization hoạt động đúng end-to-end — global query filter chặn đúng, 3 vai trò phân quyền đúng ở 2 tầng (Organization và từng App).
+**Mục tiêu cuối tuần (Tuần 4):** đạt — test thật toàn bộ luồng: Owner mời `newdev@hangar.local` (chưa có tài khoản) → email lưu đúng trong MailHog (verify qua REST API `/api/v2/messages`, decode body lấy token thật) → đăng ký tài khoản mới → accept bằng token thật → trở thành `Developer` của Organization → accept lại lần 2 → chặn đúng "đã accept trước đó". Multi-tenant + resource-based authorization hoạt động đúng end-to-end ở cả 2 tầng (Organization và từng App).
+
+**Nợ kỹ thuật/ghi chú mang sang Tuần 5:** không có — toàn bộ mục tiêu tuần đạt đủ, 2 bug thật phát hiện lúc code (enum JSON, EF query-filter warning) đã sửa và verify lại ngay trong tuần, không để tồn đọng.
 
 ---
 

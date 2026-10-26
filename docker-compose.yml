@@ -20,6 +20,14 @@ services:
       retries: 5
     restart: unless-stopped
 
+  mailhog:
+    image: mailhog/mailhog
+    container_name: hangar-mailhog
+    ports:
+      - "1026:1025" # SMTP — app gửi mail tới đây
+      - "8026:8025" # Web UI + REST API xem mail đã "gửi" (http://localhost:8026)
+    restart: unless-stopped
+
   # Service "api" sẽ bật ở tuần cuối (tương tự Ngày 21 của CRM), build từ docker/Dockerfile,
   # cùng network với postgres.
 
