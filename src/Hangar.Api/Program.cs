@@ -5,9 +5,15 @@ using Hangar.Application.Auth;
 using Hangar.Domain.Entities;
 using Hangar.Infrastructure;
 using Hangar.Infrastructure.Authorization;
+using Hangar.Infrastructure.Minio;
+using Hangar.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
+using Minio;
+using Minio.DataModel.Args;
 using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -77,6 +83,21 @@ builder.Services.AddScoped<IAuthorizationHandler, OrganizationMemberAuthorizatio
 builder.Services.AddScoped<IAuthorizationHandler, AppAccessAuthorizationHandler>();
 
 var app = builder.Build();
+
+using (var scope = app.Services.CreateScope())
+{
+    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await dbContext.Database.MigrateAsync();
+
+    var minio = scope.ServiceProvider.GetRequiredService<IMinioClient>();
+    var minioSettings = scope.ServiceProvider.GetRequiredService<IOptions<MinioSettings>>().Value;
+    var exists = await minio.BucketExistsAsync(new BucketExistsArgs().WithBucket(minioSettings.BucketName));
+    if (!exists)
+    {
+        await minio.MakeBucketAsync(new MakeBucketArgs().WithBucket(minioSettings.BucketName));
+    }
+}
+
 
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
