@@ -26,6 +26,7 @@ public class AppDbContext : IdentityUserContext<ApplicationUser, int>, IApplicat
     public DbSet<App> Apps { get; set; }
     public DbSet<AppTester> AppTesters { get; set; }
     public DbSet<OrganizationInvite> OrganizationInvites { get; set; }
+    public DbSet<Build> Builds { get; set; }
 
     public Task<IDbContextTransaction> BeginTransactionAsync(CancellationToken cancellationToken = default)
         => Database.BeginTransactionAsync(cancellationToken);
