@@ -15,6 +15,7 @@ using Microsoft.IdentityModel.Tokens;
 using Minio;
 using Minio.DataModel.Args;
 using Scalar.AspNetCore;
+using Hangar.Api.Uploads;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -25,6 +26,7 @@ var builder = WebApplication.CreateBuilder(args);
 // dùng API.
 builder.Services.AddControllers()
     .AddJsonOptions(options => options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
+builder.Services.Configure<UploadSettings>(builder.Configuration.GetSection("Upload"));
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 

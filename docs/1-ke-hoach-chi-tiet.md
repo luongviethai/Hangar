@@ -87,11 +87,15 @@
 **Mục tiêu cuối ngày:** upload file nhỏ qua API, lưu đúng MinIO + đúng `Build` record; giả lập lỗi ghi DB → file đã lưu MinIO bị tự xóa lại, không để rác.
 
 ### Ngày 10 (Thứ 4) — Upload file lớn (streaming)
-- [ ] Đọc stream trực tiếp từ `Request.Body` (không buffer toàn bộ file vào RAM) — tự parse multipart hoặc tắt model binding mặc định cho route này
-- [ ] Giới hạn kích thước file tối đa, trả `413` rõ ràng nếu vượt
-- [ ] Test với file giả lập vài trăm MB, theo dõi RAM không tăng tương ứng kích thước file
+- [x] Đọc stream trực tiếp từ `Request.Body` bằng `MultipartReader` (không buffer toàn bộ file vào RAM) — ghi dần ra file tạm trên đĩa, biết size thật sau khi ghi xong rồi mới đẩy lên MinIO (SDK MinIO cần biết size trước)
+- [x] Giới hạn kích thước qua `UploadSettings.MaxSizeBytes` (config `appsettings`), vượt là dừng đọc ngay giữa chừng + dọn file tạm, trả `413`
+- [x] **2 bug thật phát hiện lúc test** (không phải lý thuyết):
+  1. Set `IHttpMaxRequestBodySizeFeature.MaxRequestBodySize = null` thủ công trong action bị `InvalidOperationException` ("cannot be modified after the app has already started reading") — vì `[DisableRequestSizeLimit]` đã tự làm việc này sớm hơn (giai đoạn Authorization filter); code tay bị trùng và chạy muộn hơn lúc Kestrel đã bắt đầu đọc body (do `Expect: 100-continue`). Sửa bằng cách bỏ hẳn đoạn code tay, chỉ giữ `[DisableRequestSizeLimit]`.
+  2. `System.IO.IOException: Unexpected end of Stream, the content may have already been read by another component` — `FormValueProviderFactory` (đăng ký sẵn bởi `AddControllers()`) tự gọi `Request.ReadFormAsync()` cho MỌI request `multipart/form-data`, dù action không có `[FromForm]` nào, đọc sạch `Request.Body` trước khi code tự đọc multipart kịp chạy. Xác nhận bằng cách log thử raw body → ra đúng 0 byte. Sửa bằng `DisableFormValueModelBindingAttribute` (gỡ `FormValueProviderFactory`/`FormFileValueProviderFactory` khỏi pipeline cho riêng action này) — đúng pattern chính thức của Microsoft cho streaming upload.
+  3. (Lỗi tooling, không phải lỗi code) `File.Delete(tempPath)` bị lỗi `CS0119` vì `ControllerBase.File(...)` (method trả `FileResult`) shadow mất class `System.IO.File` ngay trong scope Controller — phải ghi đủ `System.IO.File.Delete(...)`.
+- [x] Test với file giả lập 250MB (`fsutil file createnew`) — RAM tiến trình API chỉ tăng ~150MB ở lần upload ĐẦU TIÊN (chi phí một lần: .NET buffer pool/MinIO SDK connection khởi tạo), lần upload 250MB THỨ 2 chỉ tăng thêm ~10MB — xác nhận không rò rỉ theo từng file. File `IFormFile` (Ngày 9) sẽ không nhận được file 250MB này ngay từ đầu (vượt giới hạn cứng Kestrel `MaxRequestBodySize` mặc định ~28.6MB), còn Ngày 10 nhận và xử lý được trọn vẹn.
 
-**Mục tiêu cuối ngày:** upload file lớn mà RAM không tăng bất thường (có số liệu quan sát thật, không chỉ tin bằng cảm giác).
+**Mục tiêu cuối ngày:** đạt — test thật: upload 5MB/250MB → `201`, đúng `sizeBytes`; hạ `MaxSizeBytes` xuống 1MB, upload 5MB → `413` kèm message rõ, không còn file tạm rác (`$env:TEMP`), không có object rác trong MinIO.
 
 ### Ngày 11 (Thứ 5) — Presigned URL
 - [ ] `GET .../builds/{id}/download-url` — sinh presigned URL (MinIO tự ký, có hạn), client tải trực tiếp từ MinIO, không qua lại API
