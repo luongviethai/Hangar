@@ -1,32 +1,33 @@
-# Hangar — Nền tảng phân phối bản build nội bộ
+# Hangar — Kho build mobile nội bộ
 
-Project 2, Giai đoạn 2 (Tuần 4-10) của lộ trình tự học backend .NET. Xem bối cảnh nghiệp vụ ở [docs/2-tai-lieu-nghiep-vu.md](docs/2-tai-lieu-nghiep-vu.md), kế hoạch chi tiết từng ngày ở [docs/1-ke-hoach-chi-tiet.md](docs/1-ke-hoach-chi-tiet.md).
+Project 2, Giai đoạn 2 (Tuần 5-8) của lộ trình tự học backend .NET. Upload APK/IPA, lưu trên MinIO, chia sẻ qua link cài đặt có hạn dùng/giới hạn lượt tải. Hệ thống mở — không có đăng nhập.
+
+Nghiệp vụ: [docs/2-tai-lieu-nghiep-vu.md](docs/2-tai-lieu-nghiep-vu.md) · Kế hoạch từng ngày: [docs/1-ke-hoach-chi-tiet.md](docs/1-ke-hoach-chi-tiet.md)
 
 ## Tech stack
 - .NET 10, ASP.NET Core Web API
-- PostgreSQL 16 (Alpine), chạy qua Docker Compose (cổng host `5436` — Project 1/CRM đã chiếm `5435`)
-- EF Core (Npgsql), ASP.NET Core Identity + JWT (tái sử dụng/port từ Project 1)
-- FluentValidation
-- Clean Architecture: Domain / Application / Infrastructure / Api (giống cấu trúc Project 1)
+- PostgreSQL 16 (Alpine) — cổng host `5436` (CRM đã chiếm `5435`)
+- MinIO (image Chainguard) — API `9002`, Console `9003`
+- Clean Architecture: Domain / Application / Infrastructure / Api
 
 ## Kiến trúc
 
 ```
 src/
   Hangar.Domain          # Entity thuần, không phụ thuộc layer nào khác
-  Hangar.Application      # Interface, DTO, Service (use case), Validator — phụ thuộc Domain
-  Hangar.Infrastructure   # EF Core, AppDbContext, Identity, Fluent config, migrations
-  Hangar.Api              # Controllers, Program.cs (composition root)
+  Hangar.Application     # Interface, DTO, Service (use case), Validator — phụ thuộc Domain
+  Hangar.Infrastructure  # EF Core, MinIO, các implementation — phụ thuộc Application
+  Hangar.Api             # Controllers, Program.cs (composition root)
 ```
 
-## Chạy project (đang ở giai đoạn dựng nền)
+## Chạy project
 
 ```bash
-docker compose up -d postgres
+docker compose up -d
 cd src/Hangar.Api
 dotnet run
 ```
 
 ## Trạng thái
 
-Mới dựng solution skeleton (Ngày 0) — chưa có entity/migration/tính năng nào. Theo dõi tiến độ ở `docs/1-ke-hoach-chi-tiet.md` và bảng tổng ở `dotnet-roadmap.md` (thư mục gốc repo học tập).
+Làm lại từ đầu ngày 2026-11-09 — solution trống, chưa có entity/migration/tính năng nào. Bản cũ (có auth/Organization) ở tag git `ban-cu-auth-org`. Theo dõi tiến độ ở `docs/1-ke-hoach-chi-tiet.md`.

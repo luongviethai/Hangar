@@ -20,14 +20,6 @@ services:
       retries: 5
     restart: unless-stopped
 
-  mailhog:
-    image: mailhog/mailhog
-    container_name: hangar-mailhog
-    ports:
-      - "1026:1025" # SMTP — app gửi mail tới đây
-      - "8026:8025" # Web UI + REST API xem mail đã "gửi" (http://localhost:8026)
-    restart: unless-stopped
-
   minio:
     # minio/minio đã bị gỡ khỏi Docker Hub, và bản mirror ở quay.io cũng chặn pull ẩn danh từ
     # 24/9/2026 — dùng image thay thế chính thức từ Chainguard (nhà cung cấp image bảo mật uy
@@ -44,7 +36,6 @@ services:
     command: server /data --console-address ":9001"
     volumes:
       - minio-data:/data
-
 
   # Service "api" sẽ bật ở tuần cuối (tương tự Ngày 21 của CRM), build từ docker/Dockerfile,
   # cùng network với postgres.

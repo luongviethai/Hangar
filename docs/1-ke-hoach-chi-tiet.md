@@ -1,365 +1,271 @@
 # Kế hoạch chi tiết — Hangar (Project 2, Giai đoạn 2)
 
-> Cách dùng giống `Pharse1/CRM/docs/1-ke-hoach-chi-tiet.md`: đánh dấu `[x]` khi xong, viết thêm ghi chú ngay dưới mục tiêu ngày nếu có quyết định/khó khăn đáng nhớ. Đánh số ngày riêng cho project này (Ngày 1-49), không dùng số tuyệt đối toàn lộ trình 12 tuần.
+> **Làm lại từ đầu (2026-11-09).** Bỏ toàn bộ đăng nhập/đăng ký, Organization, multi-tenant, tester, mời qua email, API key cho CI và webhook. Hangar giờ là **kho build mở**: ai cũng upload được, ai cũng tải được. Webhook (outbox, HMAC, retry) học riêng ở `Pharse2/WebhookDelivery`.
 >
-> Số tuần (Tuần 4-10) khớp với `dotnet-roadmap.md` ở thư mục gốc repo học tập. Nghiệp vụ/entity tham chiếu `docs/2-tai-lieu-nghiep-vu.md` — đọc trước khi code mỗi tuần mới.
+> Bản cũ (có auth/org, làm tới Ngày 10 cũ) nằm ở tag git `ban-cu-auth-org` (commit `dd462df`) — xem lại 1 file: `git show ban-cu-auth-org:src/Hangar.Api/Program.cs`.
+>
+> Cách dùng: đánh dấu `[x]` khi xong, ghi chú quyết định/khó khăn ngay dưới mục tiêu ngày. Ngày đánh số riêng cho project này (Ngày 1-28); số tuần (Tuần 5-8) khớp `dotnet-roadmap.md`. Nghiệp vụ/entity xem `docs/2-tai-lieu-nghiep-vu.md`.
+
+## Điểm xuất phát
+
+- Solution trống 4 project: `Hangar.Domain` / `Hangar.Application` / `Hangar.Infrastructure` / `Hangar.Api`. `Program.cs` chỉ có OpenAPI, chưa có package nào khác.
+- `docker-compose.yml`: `postgres` (cổng host `5436`, DB `hangar_db` trống) và `minio` (API `9002`, Console `9003`, tài khoản `hangar` / `hangar123456`).
+- `appsettings.Development.json` có sẵn `ConnectionStrings:Default` và mục `Minio`.
+
+Chạy: `docker compose up -d` → `cd src/Hangar.Api` → `dotnet run`.
+
+## Route chính (chốt dần theo ngày)
+
+| Method | Route | Ngày |
+|---|---|---|
+| POST, GET, PUT, DELETE | `/api/apps`, `/api/apps/{appId}` | 1 |
+| POST | `/api/apps/{appId}/builds` | 3, 4 |
+| GET | `/api/apps/{appId}/builds/{buildId}/download-url` | 5 |
+| GET, DELETE | `/api/apps/{appId}/builds`, `/api/apps/{appId}/builds/{buildId}` | 7 |
+| POST | `/api/apps/{appId}/builds/{buildId}/install-links` | 8 |
+| GET | `/install/{token}` (trang), `/install/{token}/download` (tải) | 8, 10 |
+| GET | `/health/live`, `/health/ready` | 18 |
 
 ---
 
-## Tuần 4: Dựng nền + multi-tenant (Ngày 1-7)
+## Tuần 5: Nền + upload và lưu trữ (Ngày 1-7)
 
-**Mục tiêu tuần:** port được auth/JWT từ Project 1 (đơn giản hóa — bỏ Role toàn cục), dựng xong Organization/OrganizationMember/App, global query filter hoạt động đúng, resource-based authorization phân quyền đúng theo 3 vai trò (Owner/Developer/Tester) ở 2 tầng (Organization và từng App).
+**Mục tiêu tuần:** có App, upload được file build thật (kể cả file lớn, đọc bằng streaming) lên MinIO, tự đọc version/package từ chính file, tải lại qua presigned URL, xóa build không để rác.
 
-### Ngày 1 (Thứ 2) — Port auth nền (đơn giản hóa so với Project 1)
-- [x] Port `ApplicationUser` (`IdentityUser<int>` + `FullName`) — **không** port `ApplicationRole`/role toàn cục
-- [x] `AddIdentityCore<ApplicationUser>()` + `AppDbContext : IdentityUserContext<ApplicationUser, int>` (không phải `IdentityDbContext<TUser,TRole,TKey>`) — verify DB chỉ có `AspNetUsers/UserClaims/UserLogins/UserTokens`, không có `AspNetRoles`/`AspNetUserRoles`
-- [x] Port `ITokenService`/`JwtTokenService`: JWT chỉ chứa `UserId`/`Email`/`Name`, không có claim `role`
-- [x] Port `IIdentityService`/`IdentityService` + refresh token (rotate/revoke) — nguyên vẹn, chỉ bỏ dòng `AddToRoleAsync`
-- [x] `POST /api/auth/register`, `/login`, `/refresh`, `/logout` — test curl thật, `GET /api/auth/me` xác nhận claims chỉ có `nameidentifier/emailaddress/name`, không có `role`
+### Ngày 1 (Thứ 2) — Nền: Postgres + entity App + CRUD App
+Phần này đã làm ở CRM — làm nhanh, mục đích là có App để gắn Build vào.
+- [ ] Package: `Microsoft.EntityFrameworkCore`, `FluentValidation`, `FluentValidation.DependencyInjectionExtensions` (Application); `Npgsql.EntityFrameworkCore.PostgreSQL` (Infrastructure); `Microsoft.EntityFrameworkCore.Design`, `Scalar.AspNetCore` (Api)
+- [ ] Entity `App` (`Name`, `Platform` = `Android`/`iOS`, `PackageId`, `CreatedAtUtc`) + `AppDbContext` + Fluent config — `PackageId` unique **toàn hệ thống** (không còn Organization để chia phạm vi)
+- [ ] Migration `InitialCreate`, chạy vào `hangar_db`
+- [ ] `POST /api/apps`, `GET /api/apps`, `GET/PUT/DELETE /api/apps/{appId}` — không `[Authorize]`; validate `PackageId` đúng dạng `com.company.app`; trùng `PackageId` → `409`
+- [ ] Global exception handler + `ProblemDetails`; enum trả về dạng chuỗi (`"Android"`, không phải `0`) bằng `JsonStringEnumConverter`
 
-**Mục tiêu cuối ngày:** đạt — verify thật bằng curl, JWT không có claim role.
+**Mục tiêu cuối ngày:** tạo/sửa/xóa App qua Scalar; `PackageId` sai định dạng → `400` kèm lỗi từng field; trùng `PackageId` → `409`; `\dt` trong Postgres thấy bảng `Apps`.
 
-### Ngày 2 (Thứ 3) — ERD + Organization/OrganizationMember
-- [x] Entity `Organization`, `OrganizationMember` (enum Role: `Owner`/`Developer`) + migration `InitialCreate` (gộp cả Ngày 1 vì là migration đầu tiên của project)
-- [x] `POST /api/organizations` — tạo Organization + `OrganizationMember` Role=Owner trong **1 `SaveChangesAsync()`** (không cần 2 lần như CreateOrder ở CRM — dùng navigation property `organization.Members.Add(...)`, EF tự fixup FK, không có "con" nào cần biết Id Organization trước khi lưu)
-- [x] `GET /api/organizations` — danh sách Organization của user hiện tại, kèm `MyRole`
-- [x] Check Slug trùng ở Service layer trước khi insert (business-existence check, giống quy ước Project 1)
+### Ngày 2 (Thứ 3) — Kết nối MinIO
+- [ ] Package `Minio` (Infrastructure); class `MinioSettings` đọc mục `Minio` trong config; đăng ký `IMinioClient` dạng singleton (client giữ connection pool, không tạo mới mỗi request)
+- [ ] Interface `IFileStorageService` ở Application (`UploadAsync`, `DeleteAsync`), implement `MinioFileStorageService` ở Infrastructure — Application không biết MinIO tồn tại
+- [ ] Tạo bucket `hangar-builds` lúc khởi động, idempotent: `BucketExistsAsync` trước rồi mới `MakeBucketAsync`
+- [ ] Bucket có thể đã có sẵn từ bản cũ (volume `minio-data` được giữ lại) — xóa bucket trong Console rồi chạy lại để test được cả nhánh tạo mới
 
-**Mục tiêu cuối ngày:** đạt — test thật: tạo Organization trả `{"myRole":"Owner"}`, trùng slug → `400`.
+**Mục tiêu cuối ngày:** chạy app → thấy bucket `hangar-builds` trong Console `http://localhost:9003`; chạy lại lần 2 không lỗi; `docker stop hangar-minio` rồi chạy app → lỗi rõ ràng ngay lúc khởi động, không đợi tới request upload đầu tiên mới vỡ.
 
-### Ngày 3 (Thứ 4) — Entity App + global query filter
-- [x] Entity `App` + migration
-- [x] `ICurrentOrganizationContext` (interface ở Application, implementation đơn giản ở Infrastructure)
-- [x] `AppDbContext` nhận `ICurrentOrganizationContext` qua constructor, `HasQueryFilter` cho `App` **đặt trực tiếp trong `AppDbContext.OnModelCreating`**, không đặt trong `AppConfiguration` — vì `ApplyConfigurationsFromAssembly()` dùng `Activator.CreateInstance` (không qua DI), `IEntityTypeConfiguration<App>` không nhận được `ICurrentOrganizationContext` qua constructor được
+### Ngày 3 (Thứ 4) — Entity Build + upload cơ bản
+- [ ] Entity `Build` (`AppId`, `Version`, `BuildNumber`, `StorageKey`, `OriginalFileName`, `FileSizeBytes`, `ReleaseNotes?`, `CreatedAtUtc`) + migration
+- [ ] `POST /api/apps/{appId}/builds` — nhận `IFormFile` qua `multipart/form-data`; tạm thời client tự gửi `version`/`buildNumber` trong form (Ngày 6 sẽ đọc từ chính file)
+- [ ] `StorageKey` do server sinh (ví dụ `apps/{appId}/{Guid}.apk`), **không** dùng tên file client gửi — tên file là dữ liệu người dùng, có thể chứa `../` hoặc trùng nhau
+- [ ] Kiểm tra App tồn tại **trước** khi lưu file; thứ tự: lưu MinIO trước → ghi DB sau; ghi DB lỗi → tự xóa object vừa lưu (compensating action — MinIO không nằm trong transaction của DB, phải tự code "rollback")
 
-**Mục tiêu cuối ngày:** đạt (verify gián tiếp ở Ngày 4 — xem ghi chú).
+**Mục tiêu cuối ngày:** upload file nhỏ → `201`, có object trong MinIO và dòng `Builds` khớp `StorageKey`; App không tồn tại → `404`, không có object nào được tạo; giả lập lỗi ghi DB (tạm `throw` ngay sau bước upload) → object vừa lưu bị xóa lại, bucket sạch.
 
-### Ngày 4 (Thứ 5) — Resource-based authorization
-- [x] `OrganizationMemberRequirement` + `OrganizationMemberAuthorizationHandler` — đọc `{organizationId}` từ route qua `IHttpContextAccessor` (không dùng `context.Resource`, vì giá trị đó không nhất quán giữa middleware auth và MVC filter auth)
-- [x] Set `ICurrentOrganizationContext.OrganizationId` **sau khi** `context.Succeed()` — đúng thứ tự
-- [x] Chỉ 2 policy tĩnh (`OrgDeveloper`, `OrgOwner`) đăng ký trong `Program.cs` — không cần policy provider động như CRM vì chỉ có 2 giá trị `MinimumRole` khả dĩ
-- [x] So sánh Role bằng hàm `Satisfies()` rõ nghĩa (Owner thỏa mọi yêu cầu), không dựa vào thứ tự số của enum — tránh lỗi âm thầm nếu sau này đổi thứ tự khai báo enum
+### Ngày 4 (Thứ 5) — Upload file lớn (streaming)
+- [ ] Đọc thẳng `Request.Body` bằng `MultipartReader` (bỏ `IFormFile`): ghi dần ra file tạm trên đĩa → biết size thật → đẩy lên MinIO (SDK cần biết size trước) → xóa file tạm trong `finally`. Các field text (`version`, `buildNumber`) cũng đọc từ section của multipart
+- [ ] Giới hạn qua `Upload:MaxSizeBytes` trong config: vượt là dừng đọc ngay giữa chừng, dọn file tạm, trả `413`
+- [ ] Bỏ giới hạn body mặc định của Kestrel (~28.6MB) cho riêng endpoint này
+- [ ] Đo RAM tiến trình API khi upload file 250MB (tạo file giả: `fsutil file createnew big.apk 262144000`)
 
-**Mục tiêu cuối ngày:** đạt — test thật: user ngoài gọi Organization không phải thành viên → `403`; tạo Organization 2 (khác chủ) → `GetAll apps` của org 2 trả rỗng, **không lộ** App của org 1 (xác nhận cả resource-based auth và global query filter Ngày 3 cùng hoạt động đúng).
+<details>
+<summary>Gợi ý nếu kẹt (lỗi thật đã gặp ở lần làm trước)</summary>
 
-### Ngày 5 (Thứ 6) — CRUD App
-- [x] `GET/POST/PUT/DELETE /api/organizations/{organizationId}/apps/{appId}` — policy `OrgDeveloper` (Owner cũng thỏa) cho mọi action, đúng ma trận (create/update/delete App đều Owner+Developer được, không riêng Owner)
-- [x] `PackageId` unique trong phạm vi 1 Organization — check ở Service, tận dụng `_context.Apps` đã bị global filter lọc sẵn nên chỉ cần check `PackageId`, không cần lặp lại `OrganizationId`
-- [x] **Bug thật phát hiện lúc test**: enum (`Platform`, `Role`) mặc định System.Text.Json serialize/deserialize dạng số, nhưng response lại trả chuỗi (`.ToString()`) — gửi `"platform":"Android"` bị `400`. Sửa bằng `JsonStringEnumConverter` toàn cục ở `Program.cs`.
+- Body đọc ra 0 byte, hoặc `IOException: Unexpected end of Stream` → model binding của MVC đã tự đọc form trước khi action chạy. Cần gỡ `FormValueProviderFactory`/`FormFileValueProviderFactory` cho riêng action này (pattern chính thức của Microsoft cho streaming upload).
+- `InvalidOperationException ... after the app has already started reading` → đừng tự set `MaxRequestBodySize` trong action, chỉ dùng `[DisableRequestSizeLimit]`.
+- `File.Delete(...)` báo `CS0119` trong Controller → `ControllerBase.File(...)` che mất class `System.IO.File`, phải ghi đủ `System.IO.File.Delete(...)`.
+</details>
 
-**Mục tiêu cuối ngày:** đạt — test thật: tạo App `201`, `GetAll` đúng kết quả, PackageId trùng trong org → `400`.
+**Mục tiêu cuối ngày:** upload 250MB → `201`, `FileSizeBytes` đúng; RAM không tăng theo kích thước file (upload 250MB lần 2 gần như không tăng thêm); hạ `MaxSizeBytes` xuống 1MB, upload 5MB → `413`, không còn file tạm trong `%TEMP%`, không có object rác trong MinIO.
 
-### Ngày 6 (Thứ 7, nhiều thời gian hơn) — AppTester
-- [x] Entity `AppTester` (chỉ scalar FK `AppId`, **không** navigation tới `App`) + migration
-- [x] **Bug thật phát hiện lúc tạo migration**: khai báo navigation `App` ban đầu (`required` tới entity có global query filter) → EF Core cảnh báo `CoreEventId...QueryFilterInteractionWarning` (`Include` có thể cho kết quả sai khi `App` bị filter ra ngoài). Không dùng navigation này ở đâu trong code → bỏ hẳn, migration tạo lại sạch không còn warning.
-- [x] `POST/GET/DELETE .../apps/{appId}/testers` — policy `OrgDeveloper` (chỉ Owner/Developer quản lý danh sách tester)
-- [x] `AppAccessRequirement`/`AppAccessAuthorizationHandler` riêng — cho `GET .../apps/{appId}` (đọc 1 App cụ thể): thỏa nếu là `OrganizationMember` **HOẶC** là `AppTester` của đúng `appId` đó. Policy này **chỉ** gắn vào action đọc 1 resource cụ thể, không gắn vào action list (`GetAll`), vì set `ICurrentOrganizationContext` ở nhánh Tester vẫn an toàn khi luôn có thêm điều kiện lọc theo đúng 1 `appId` ở tầng Service.
+### Ngày 5 (Thứ 6) — Presigned URL
+- [ ] `GET /api/apps/{appId}/builds/{buildId}/download-url` — sinh presigned URL (`PresignedGetObjectAsync`), hạn dùng lấy từ config (ví dụ `Minio:PresignedUrlExpirySeconds`)
+- [ ] Người tải nhận file tên dễ đọc (`MyApp-1.4.2.apk`) thay vì GUID — truyền tham số `response-content-disposition` lúc ký URL (S3 hỗ trợ sẵn)
+- [ ] Ghi rõ quyết định: tải qua presigned URL (file đi thẳng MinIO → client, API không phải chuyển hàng trăm MB) thay vì stream file qua API
+- [ ] Ghi nhớ cho Ngày 24: URL được ký theo host `localhost:9002` — khi API chạy trong Docker và gọi MinIO bằng `minio:9000`, URL ký ra sẽ không dùng được từ máy ngoài
 
-**Mục tiêu cuối ngày:** đạt — test thật: mời outsider làm tester App 1 → outsider `GET app 1` (org 1) → `200`; outsider `GET toàn bộ apps` (org 1, action list) → vẫn `403` đúng (Tester không duyệt được cả Organization).
+**Mục tiêu cuối ngày:** `curl` URL vừa lấy (không cần gì thêm) → file tải về có SHA-256 trùng file gốc (`certutil -hashfile <file> SHA256`); đặt hạn 60 giây, đợi quá hạn gọi lại → MinIO trả `403` (`Request has expired`); sửa 1 ký tự trong chữ ký → `403`.
 
-### Ngày 7 (Chủ nhật, nhiều thời gian hơn) — Mời thành viên qua email, tổng kết tuần
-- [x] Service `mailhog` trong `docker-compose.yml` (cổng `1026` SMTP, `8026` Web UI/API — tránh đụng cổng CRM)
-- [x] `IEmailSender`/`SmtpEmailSender` (dùng `System.Net.Mail.SmtpClient` trỏ MailHog, không TLS/auth — đủ cho mục tiêu học)
-- [x] Entity `OrganizationInvite` (Email + TokenHash, **không** gắn UserId lúc tạo — hỗ trợ mời cả người chưa có tài khoản)
-- [x] `POST /api/organizations/{organizationId}/members/invite` (policy `OrgOwner` — chỉ Owner mời, Developer không được) — token **chỉ gửi qua email, không trả trong response API** (người gọi API là Owner, không phải người được phép dùng token)
-- [x] `POST /api/organizations/invites/accept` — **không có `{organizationId}` trong route**, token tự xác định Organization (TokenHash unique toàn cục) — chỉ `[Authorize]` thường, check email đang đăng nhập khớp đúng email được mời, chặn accept 2 lần
+### Ngày 6 (Thứ 7, nhiều thời gian hơn) — Đọc metadata build
+- [ ] APK: `AndroidManifest.xml` là XML dạng binary, không đọc bằng `XDocument` được → package `AlphaOmega.ApkReader` → `versionName`/`versionCode`/`package`
+- [ ] IPA: file zip, tìm `Payload/*.app/Info.plist` bằng `System.IO.Compression`; plist có thể ở dạng binary → package `plist-cil` → `CFBundleShortVersionString`/`CFBundleVersion`/`CFBundleIdentifier`
+- [ ] Đọc metadata từ **file tạm** (Ngày 4) trước khi đẩy lên MinIO → file sai bị chặn từ đầu, không phải upload rồi xóa
+- [ ] Bỏ `version`/`buildNumber` client gửi, lấy từ file; `PackageId` đọc được phải khớp `App.PackageId`, đuôi file khớp `App.Platform` (`.apk` ↔ Android, `.ipa` ↔ iOS); unique `(AppId, BuildNumber)` — upload lại cùng build number → `409`
+- [ ] Ghi quyết định: `BuildNumber` lưu kiểu gì — Android `versionCode` là số nguyên, iOS `CFBundleVersion` là chuỗi (có thể `"42"` hoặc `"1.0.3"`), mà "bản mới nhất" cần sort đúng
+- [ ] File mẫu: APK thật bất kỳ; IPA khó kiếm → tự tạo file zip đúng cấu trúc `Payload/Test.app/Info.plist` rồi đổi đuôi `.ipa`
 
-**Mục tiêu cuối tuần (Tuần 4):** đạt — test thật toàn bộ luồng: Owner mời `newdev@hangar.local` (chưa có tài khoản) → email lưu đúng trong MailHog (verify qua REST API `/api/v2/messages`, decode body lấy token thật) → đăng ký tài khoản mới → accept bằng token thật → trở thành `Developer` của Organization → accept lại lần 2 → chặn đúng "đã accept trước đó". Multi-tenant + resource-based authorization hoạt động đúng end-to-end ở cả 2 tầng (Organization và từng App).
+**Mục tiêu cuối ngày:** upload APK thật → tự điền đúng version/build number; upload APK của app khác (package không khớp) → lỗi `4xx` rõ ràng, không có object nào trong MinIO; upload file text đổi đuôi `.apk` → lỗi rõ ràng, không `500`.
 
-**Nợ kỹ thuật/ghi chú mang sang Tuần 5:** không có — toàn bộ mục tiêu tuần đạt đủ, 2 bug thật phát hiện lúc code (enum JSON, EF query-filter warning) đã sửa và verify lại ngay trong tuần, không để tồn đọng.
+### Ngày 7 (Chủ nhật, nhiều thời gian hơn) — Hoàn thiện API Build + tổng kết tuần
+- [ ] `GET /api/apps/{appId}/builds` (sort `BuildNumber` giảm dần, phân trang), `GET /api/apps/{appId}/builds/{buildId}`
+- [ ] `DELETE /api/apps/{appId}/builds/{buildId}` — xóa record DB + object MinIO; chọn thứ tự và ghi lý do theo câu hỏi: bước sau lỗi thì để lại cái gì? (record trỏ tới file không còn = link hỏng; file không còn record = rác tốn chỗ nhưng dọn được sau)
+- [ ] Xóa App đang có build → chặn `409` hay xóa luôn build + file? Chọn 1, ghi lý do
+- [ ] Test lại toàn bộ: tạo App → upload APK thật → metadata đúng → presigned URL tải được → xóa build → MinIO sạch
+- [ ] Giải thích được: vì sao streaming thay vì buffer cả file; presigned URL hoạt động thế nào (MinIO tự kiểm chữ ký, API không đứng giữa lúc tải)
+
+**Mục tiêu cuối tuần (Tuần 5):** upload/tải/xóa build thật ổn định, không còn file rác trong MinIO hay file tạm trên đĩa.
 
 ---
 
-## Tuần 5: Upload và lưu trữ (Ngày 8-14)
+## Tuần 6: Link cài đặt + job chạy nền (Ngày 8-14)
 
-**Mục tiêu tuần:** upload được file build (APK/IPA) thật, kể cả file lớn (streaming), lưu MinIO, đọc đúng metadata (version/package) từ chính file, tải lại qua presigned URL.
+**Mục tiêu tuần:** chia sẻ build qua link có hạn dùng/giới hạn lượt tải, đúng cả khi nhiều người tải cùng lúc; việc nặng (đọc metadata, dọn build cũ) chạy nền, upload trả về ngay.
 
-### Ngày 8 (Thứ 2) — Cài MinIO
-- [ ] Thêm service `minio` vào `docker-compose.yml` (image `minio/minio`, console UI riêng cổng)
-- [ ] Cài SDK `Minio` ở Infrastructure, tạo bucket `hangar-builds` lúc khởi động (idempotent — kiểm tra tồn tại trước khi tạo, giống cách seed Permission Project 1)
+### Ngày 8 (Thứ 2) — InstallLink: tạo + hạn dùng
+- [ ] Entity `InstallLink` (`BuildId`, `Token`, `ExpiresAtUtc?`, `MaxDownloads?`, `DownloadCount`, `CreatedAtUtc`) + migration; `Token` unique
+- [ ] `POST /api/apps/{appId}/builds/{buildId}/install-links` — `Token` sinh bằng `RandomNumberGenerator` (32 byte, Base64Url); không dùng Id số (tăng dần, đoán được), cũng không dùng `Guid` (không được thiết kế làm token bảo mật); `ExpiresAtUtc`/`MaxDownloads` đều optional
+- [ ] `GET /install/{token}` — không có token → `404`; hết hạn → `410 Gone`; còn hạn → `302` chuyển sang presigned URL hạn ngắn (tái dùng Ngày 5)
 
-**Mục tiêu cuối ngày:** container MinIO chạy, tạo/list bucket được từ code (test nhanh qua 1 endpoint tạm hoặc unit nhỏ).
+**Mục tiêu cuối ngày:** mở link còn hạn bằng trình duyệt → tải được file; link hết hạn → `410` kèm message rõ; token bịa → `404`.
 
-### Ngày 9 (Thứ 3) — Entity Build + upload cơ bản
-- [ ] Entity `Build` + migration
-- [ ] `POST .../apps/{appId}/builds` — nhận file qua `multipart/form-data`, lưu MinIO rồi mới ghi `Build` — quyết định rõ thứ tự, viết logic tự xóa file MinIO nếu bước ghi DB thất bại (không phải DB transaction, phải tự code "rollback" cho side-effect ngoài DB)
+### Ngày 9 (Thứ 3) — Giới hạn lượt tải + concurrency
+- [ ] `DownloadCount` tăng mỗi lần tải; hết lượt → `410`
+- [ ] Viết bản ngây thơ trước ("đọc → kiểm tra → tăng → lưu"), bắn 20 request cùng lúc vào link `MaxDownloads = 1`, quan sát có bao nhiêu request lọt qua (race condition thật):
+  `seq 20 | xargs -P 20 -I{} curl -s -o /dev/null -w "%{http_code}\n" http://localhost:5032/install/<token> | sort | uniq -c`
+- [ ] Sửa bằng 1 trong 2 cách, ghi lý do chọn:
+  - (a) 1 câu `UPDATE ... SET "DownloadCount" = "DownloadCount" + 1 WHERE "Id" = @id AND ("MaxDownloads" IS NULL OR "DownloadCount" < "MaxDownloads")` qua `ExecuteUpdateAsync` — số dòng bị ảnh hưởng = 0 nghĩa là hết lượt
+  - (b) concurrency token `xmin` (như CRM) + bắt `DbUpdateConcurrencyException`
 
-**Mục tiêu cuối ngày:** upload file nhỏ qua API, lưu đúng MinIO + đúng `Build` record; giả lập lỗi ghi DB → file đã lưu MinIO bị tự xóa lại, không để rác.
+**Mục tiêu cuối ngày:** 20 request đồng thời vào link còn đúng 1 lượt → đúng 1 request `302`, 19 request `410`; `DownloadCount` trong DB = 1.
 
-### Ngày 10 (Thứ 4) — Upload file lớn (streaming)
-- [x] Đọc stream trực tiếp từ `Request.Body` bằng `MultipartReader` (không buffer toàn bộ file vào RAM) — ghi dần ra file tạm trên đĩa, biết size thật sau khi ghi xong rồi mới đẩy lên MinIO (SDK MinIO cần biết size trước)
-- [x] Giới hạn kích thước qua `UploadSettings.MaxSizeBytes` (config `appsettings`), vượt là dừng đọc ngay giữa chừng + dọn file tạm, trả `413`
-- [x] **2 bug thật phát hiện lúc test** (không phải lý thuyết):
-  1. Set `IHttpMaxRequestBodySizeFeature.MaxRequestBodySize = null` thủ công trong action bị `InvalidOperationException` ("cannot be modified after the app has already started reading") — vì `[DisableRequestSizeLimit]` đã tự làm việc này sớm hơn (giai đoạn Authorization filter); code tay bị trùng và chạy muộn hơn lúc Kestrel đã bắt đầu đọc body (do `Expect: 100-continue`). Sửa bằng cách bỏ hẳn đoạn code tay, chỉ giữ `[DisableRequestSizeLimit]`.
-  2. `System.IO.IOException: Unexpected end of Stream, the content may have already been read by another component` — `FormValueProviderFactory` (đăng ký sẵn bởi `AddControllers()`) tự gọi `Request.ReadFormAsync()` cho MỌI request `multipart/form-data`, dù action không có `[FromForm]` nào, đọc sạch `Request.Body` trước khi code tự đọc multipart kịp chạy. Xác nhận bằng cách log thử raw body → ra đúng 0 byte. Sửa bằng `DisableFormValueModelBindingAttribute` (gỡ `FormValueProviderFactory`/`FormFileValueProviderFactory` khỏi pipeline cho riêng action này) — đúng pattern chính thức của Microsoft cho streaming upload.
-  3. (Lỗi tooling, không phải lỗi code) `File.Delete(tempPath)` bị lỗi `CS0119` vì `ControllerBase.File(...)` (method trả `FileResult`) shadow mất class `System.IO.File` ngay trong scope Controller — phải ghi đủ `System.IO.File.Delete(...)`.
-- [x] Test với file giả lập 250MB (`fsutil file createnew`) — RAM tiến trình API chỉ tăng ~150MB ở lần upload ĐẦU TIÊN (chi phí một lần: .NET buffer pool/MinIO SDK connection khởi tạo), lần upload 250MB THỨ 2 chỉ tăng thêm ~10MB — xác nhận không rò rỉ theo từng file. File `IFormFile` (Ngày 9) sẽ không nhận được file 250MB này ngay từ đầu (vượt giới hạn cứng Kestrel `MaxRequestBodySize` mặc định ~28.6MB), còn Ngày 10 nhận và xử lý được trọn vẹn.
+### Ngày 10 (Thứ 4) — Trang tải cho người nhận link
+- [ ] Tách 2 endpoint: `GET /install/{token}` trả trang HTML đơn giản (tên App, version, release notes, ngày upload, nút "Tải về"); `GET /install/{token}/download` mới tính lượt tải và chuyển hướng
+- [ ] Lý do tách: Slack/Zalo/Messenger tự mở link để tạo bản xem trước → nếu cứ mở link là tính lượt, bot đã "ăn" mất lượt tải trước khi người thật bấm
+- [ ] Encode mọi dữ liệu người dùng nhập khi đưa vào HTML (tên App, release notes) — ai cũng upload được nên ai cũng có thể chèn `<script>`
+- [ ] Link hết hạn/hết lượt → trang báo lỗi dễ hiểu (vẫn đúng status code), không trả JSON `ProblemDetails` cho trình duyệt
 
-**Mục tiêu cuối ngày:** đạt — test thật: upload 5MB/250MB → `201`, đúng `sizeBytes`; hạ `MaxSizeBytes` xuống 1MB, upload 5MB → `413` kèm message rõ, không còn file tạm rác (`$env:TEMP`), không có object rác trong MinIO.
+**Mục tiêu cuối ngày:** mở trang nhiều lần → `DownloadCount` không đổi; bấm "Tải về" → tăng đúng 1 và tải được file; release notes `<script>alert(1)</script>` hiện ra dạng chữ, không chạy.
 
-### Ngày 11 (Thứ 5) — Presigned URL
-- [ ] `GET .../builds/{id}/download-url` — sinh presigned URL (MinIO tự ký, có hạn), client tải trực tiếp từ MinIO, không qua lại API
-- [ ] Ghi rõ quyết định: dùng presigned URL cho InstallLink (Tuần 6, giảm tải server), vẫn giữ endpoint tải qua API cho trường hợp cần kiểm soát/log chặt hơn
+### Ngày 11 (Thứ 5) — Cài Hangfire, đọc metadata chạy nền
+- [ ] Package `Hangfire.AspNetCore` + `Hangfire.PostgreSql`, lưu job vào chính `hangar_db` (schema `hangfire` riêng); dashboard `/hangfire` giữ mặc định **chỉ mở từ máy local** (không có đăng nhập để bảo vệ)
+- [ ] Upload chỉ lưu file + tạo Build rồi enqueue job đọc metadata → trả `202 Accepted` ngay; job tải file từ MinIO về file tạm, đọc metadata (code Ngày 6), cập nhật Build — `Version`/`BuildNumber` phải cho phép null trong lúc chờ
+- [ ] Ghi quyết định đánh đổi: Ngày 6 chặn sai package **trước** khi lưu; giờ chỉ phát hiện **sau** khi lưu — upload sai vẫn tốn 1 lần lưu và phải dọn (Ngày 12)
 
-**Mục tiêu cuối ngày:** lấy presigned URL, tải trực tiếp từ MinIO bằng URL đó (không cần Bearer token), URL hết hạn đúng thời gian cấu hình.
+**Mục tiêu cuối ngày:** upload trả về ngay khi lưu file xong, không đợi đọc metadata; vài giây sau Build có version đúng; thấy job `Succeeded` trên dashboard Hangfire.
 
-### Ngày 12 (Thứ 6) — Đọc metadata build
-- [ ] Parse APK (file zip, đọc `AndroidManifest.xml` dạng binary — dùng thư viện NuGet chuyên dụng) → `versionName`/`versionCode`/`packageName`
-- [ ] Parse IPA (file zip, đọc `Info.plist` trong `Payload/*.app/`) → `CFBundleShortVersionString`/`CFBundleVersion`/`CFBundleIdentifier`
-- [ ] Tự điền `Version`/`BuildNumber`/`PackageId` từ file; validate `PackageId` đọc được khớp `App.PackageId` đã đăng ký, chặn upload nhầm app
+### Ngày 12 (Thứ 6) — Trạng thái xử lý Build
+- [ ] `Build.ProcessingStatus` (`Pending`/`Processing`/`Ready`/`Failed`) + `FailureReason`; API list/chi tiết trả về trạng thái
+- [ ] Lỗi do file (không đọc được, sai package, trùng build number) → `Failed` + lý do, **không** retry (retry 10 lần thì file hỏng vẫn hỏng); lỗi tạm thời (MinIO/DB chập chờn) → để Hangfire tự retry
+- [ ] Chỉ Build `Ready` mới tạo được InstallLink / lấy presigned URL; Build `Failed` → xóa file trên MinIO, giữ record để người upload biết lý do
 
-**Mục tiêu cuối ngày:** upload file APK/IPA thật → tự đọc đúng version/package; upload nhầm app (package không khớp) → bị chặn, lỗi rõ ràng.
+**Mục tiêu cuối ngày:** upload file hỏng → Build `Failed` kèm lý do rõ, job không retry; `docker stop hangar-minio` lúc job đang chờ chạy → job retry, bật MinIO lại thì Build thành `Ready`; không Build nào kẹt ở `Pending`/`Processing` mãi.
 
-### Ngày 13 (Thứ 7, nhiều thời gian hơn) — Hoàn thiện API Build
-- [ ] `GET .../builds` (list, sort `BuildNumber` giảm dần), `GET .../builds/{id}`
-- [ ] `DELETE .../builds/{id}` — xóa file MinIO + record DB cùng lúc, xử lý khi 1 trong 2 bước thất bại
-- [ ] Validator cho upload (dung lượng, đúng định dạng `.apk`/`.ipa`)
+### Ngày 13 (Thứ 7, nhiều thời gian hơn) — Job dọn build cũ
+- [ ] Recurring job (`RecurringJob.AddOrUpdate`, chạy mỗi đêm): mỗi App chỉ giữ N build `Ready` mới nhất (`Retention:KeepLatestBuilds` trong config), build cũ hơn → xóa file MinIO + record DB (tái dùng logic xóa Ngày 7)
+- [ ] Quyết định: build cũ còn InstallLink đang hiệu lực thì xóa luôn hay giữ lại? Ghi lý do
+- [ ] Dọn luôn Build `Failed` quá X ngày
+- [ ] Job phải chạy lại được an toàn (tắt app giữa lúc đang xóa, lần sau chạy tiếp không lỗi, không xóa nhầm)
 
-**Mục tiêu cuối ngày:** CRUD Build hoàn chỉnh, xóa Build dọn sạch cả MinIO lẫn DB.
+**Mục tiêu cuối ngày:** 1 App có N+3 build, bấm "Trigger now" trên dashboard → còn đúng N build mới nhất, MinIO còn đúng N object của App đó; trigger lần 2 liên tiếp → không lỗi, không xóa thêm gì.
 
 ### Ngày 14 (Chủ nhật, nhiều thời gian hơn) — Test lại + tổng kết tuần
-- [ ] Test toàn bộ luồng: tạo App → upload build thật (file mẫu) → metadata đọc đúng → presigned URL tải được → xóa build → MinIO sạch
-- [ ] Giải thích được: vì sao dùng streaming thay vì buffer toàn file; presigned URL hoạt động thế nào (MinIO tự ký, server không cần đứng giữa lúc tải)
+- [ ] Toàn bộ luồng: upload → job đọc metadata → `Ready` → tạo InstallLink → mở trang → tải → hết lượt `410` → job dọn build cũ đúng
+- [ ] Giải thích được: vì sao token ngẫu nhiên thay vì Id; race condition ở Ngày 9 xảy ra thế nào và cách sửa đã chọn chặn nó ra sao; khi nào nên đưa việc ra chạy nền thay vì xử lý ngay trong request
 
-**Mục tiêu cuối tuần (Tuần 5):** upload/tải/xóa build thật ổn định, không rò rỉ file rác trong MinIO.
+**Mục tiêu cuối tuần (Tuần 6):** link cài đặt chạy đúng kể cả khi tải đồng thời; upload không phải đợi xử lý nặng; build cũ tự được dọn.
 
 ---
 
-## Tuần 6: Xác thực máy-máy và link cài đặt (Ngày 15-21)
+## Tuần 7: Cache, giới hạn, quan sát (Ngày 15-21)
 
-**Mục tiêu tuần:** CI upload được build bằng API key (không qua JWT), tester tải được build qua link công khai có hạn dùng/giới hạn lượt tải, an toàn với concurrency.
+**Mục tiêu tuần:** giảm tải đọc bằng cache mà không hiển thị dữ liệu cũ; chặn spam; nhìn được bên trong hệ thống khi đang chạy (health, trace, metric).
 
-### Ngày 15 (Thứ 2) — Entity ApiKey + sinh key
-- [ ] Entity `ApiKey` + migration
-- [ ] `POST /api/organizations/{orgId}/api-keys` (Owner) — sinh key ngẫu nhiên đủ entropy, trả về **đúng 1 lần** lúc tạo, từ đó chỉ lưu hash (giống `RefreshToken.TokenHash` Project 1)
-- [ ] `DELETE /api/organizations/{orgId}/api-keys/{id}` (revoke)
+### Ngày 15 (Thứ 2) — Redis cache
+- [ ] Service `redis` (image `redis`) trong `docker-compose.yml`, cổng host lệch mặc định (ví dụ `6380`) tránh đụng project khác; package `Microsoft.Extensions.Caching.StackExchangeRedis`, dùng qua `IDistributedCache`
+- [ ] Cache trang đầu của `GET /api/apps/{appId}/builds` (key gắn `AppId`), có TTL; miss mới query DB
+- [ ] Bật log SQL của EF Core để thấy rõ lần gọi thứ 2 không query DB
 
-**Mục tiêu cuối ngày:** tạo API key, DB chỉ lưu hash; gọi lại không lấy được key gốc lần 2.
+**Mục tiêu cuối ngày:** gọi list lần 1 → có câu SQL trong log; lần 2 → không có SQL, trả lời nhanh hơn; `docker exec hangar-redis redis-cli KEYS '*'` và `TTL <key>` thấy đúng key và thời gian sống.
 
-### Ngày 16 (Thứ 3) — Xác thực bằng ApiKey (khác JWT)
-- [ ] Custom `AuthenticationHandler` cho scheme riêng (ví dụ `ApiKeyScheme`) — đọc header `X-Api-Key`, hash, tra DB, set `ClaimsPrincipal` gắn đúng Organization sở hữu key
-- [ ] Đăng ký cả 2 scheme (JWT cho user, ApiKey cho CI) cùng lúc — route CI dùng `[Authorize(AuthenticationSchemes = "ApiKeyScheme")]` riêng với route user dùng JWT
+### Ngày 16 (Thứ 3) — Cache invalidation
+- [ ] Liệt kê **mọi** chỗ làm danh sách build thay đổi rồi xóa đúng cache key ở từng chỗ: upload, xóa build, job đọc metadata đổi trạng thái (Ngày 12), job dọn build cũ (Ngày 13) — 2 chỗ cuối chạy trong job nền, rất dễ sót
+- [ ] Giải thích: vì sao xóa-khi-thay-đổi thay vì chỉ để TTL ngắn tự hết hạn (build mới phải hiện ngay)
 
-**Mục tiêu cuối ngày:** gọi API bằng header `X-Api-Key` xác thực được, không cần Bearer token; key đã revoke → `401`.
+**Mục tiêu cuối ngày:** upload build mới → list thấy ngay khi `Ready`; trigger job dọn → list cập nhật ngay; không lúc nào list hiện build đã bị xóa.
 
-### Ngày 17 (Thứ 4) — Endpoint CI upload
-- [ ] `POST /api/ci/builds` — nhận `AppId`/`PackageId` trong body (không có `{orgId}` trong route vì CI không biết context qua URL, Organization suy ra từ ApiKey đang dùng) — tái dùng toàn bộ logic upload Tuần 5
-- [ ] Validate `App` thuộc đúng Organization của ApiKey đang dùng (chặn key Organization A upload nhầm vào App Organization B)
+### Ngày 17 (Thứ 4) — Rate limiting
+- [ ] Rate limiter có sẵn của ASP.NET Core (`AddRateLimiter`, không cần package) — giới hạn theo IP: `/install/{token}/download` (chặn spam vét lượt tải) và `POST /api/apps/{appId}/builds` (ai cũng upload được → chặn 1 máy đẩy liên tục làm đầy ổ)
+- [ ] Trả `429` kèm header `Retry-After`
+- [ ] Ghi nhớ cho Ngày 26: sau nginx, mọi request đều mang IP của nginx → cần `ForwardedHeaders`, nếu không cả thế giới dùng chung 1 hạn mức
 
-**Mục tiêu cuối ngày:** script giả lập CI (curl + ApiKey) upload build thành công, build gắn đúng `UploadedByApiKeyId`.
+**Mục tiêu cuối ngày:** bắn vượt giới hạn → `429` có `Retry-After`; đợi hết thời gian → gọi lại được; endpoint khác không bị ảnh hưởng.
 
-### Ngày 18 (Thứ 5) — InstallLink: tạo + hạn dùng
-- [ ] Entity `InstallLink` + migration
-- [ ] `POST .../builds/{id}/install-links` — sinh `Token` ngẫu nhiên, `ExpiresAtUtc`/`MaxDownloads` theo request (cả 2 optional)
-- [ ] `GET /install/{token}` — endpoint **công khai** (không `[Authorize]`), check hết hạn/vượt giới hạn tải → `404`/`410` rõ ràng trước khi cho tải
+### Ngày 18 (Thứ 5) — Health checks
+- [ ] `AddHealthChecks()` + `AspNetCore.HealthChecks.NpgSql`, `AspNetCore.HealthChecks.Redis`; MinIO tự viết `IHealthCheck` (gọi `BucketExistsAsync`)
+- [ ] 2 endpoint: `/health/live` (app còn sống, không kiểm dependency) và `/health/ready` (kiểm Postgres/Redis/MinIO), trả JSON chi tiết từng dependency
+- [ ] Redis chết thì list build có chết theo không? Nên bắt lỗi cache và đọc thẳng DB → Redis lỗi báo `Degraded` thay vì `Unhealthy` — ghi quyết định
 
-**Mục tiêu cuối ngày:** link còn hạn tải được; link hết hạn hoặc vượt `MaxDownloads` → chặn đúng, message rõ ràng.
+**Mục tiêu cuối ngày:** `docker stop hangar-redis` → `/health/ready` chỉ rõ Redis lỗi, `/health/live` vẫn `200`, list build vẫn trả về được (chậm hơn); bật lại → `Healthy`.
 
-### Ngày 19 (Thứ 6) — Giới hạn lượt tải + concurrency
-- [ ] `DownloadCount` tăng mỗi lần tải thành công — áp lại bài học concurrency Ngày 17 Project 1: 2 người tải cùng lúc khi còn đúng 1 lượt, không được để cả 2 cùng qua
-- [ ] Concurrency token cho `InstallLink` (giống `xmin` Project 1) hoặc transaction + check lại trước khi tăng `DownloadCount`
+### Ngày 19 (Thứ 6) — OpenTelemetry: trace
+- [ ] Package `OpenTelemetry.Extensions.Hosting`, `OpenTelemetry.Instrumentation.AspNetCore`, `OpenTelemetry.Instrumentation.Http`, `OpenTelemetry.Exporter.OpenTelemetryProtocol`; EF Core: `OpenTelemetry.Instrumentation.EntityFrameworkCore` (hiện chỉ có bản beta)
+- [ ] Service Jaeger v2 (image `jaegertracing/jaeger` — bản `all-in-one` cũ đã ngừng phát hành) trong compose: UI cổng `16686`, nhận OTLP
+- [ ] `ActivitySource` riêng cho các bước upload: ghi file tạm → đẩy MinIO → ghi DB (lời gọi tới MinIO đi qua `HttpClient` nên instrumentation Http tự bắt được)
 
-**Mục tiêu cuối ngày:** 2 request tải đồng thời khi còn đúng 1 lượt — đúng 1 thành công, 1 bị chặn rõ ràng, không có tình trạng cả 2 cùng tải được.
+**Mục tiêu cuối ngày:** mở Jaeger thấy 1 trace upload đầy đủ (HTTP request → các bước con → câu SQL → lời gọi HTTP tới MinIO), chỉ ra bước chậm nhất bằng số liệu.
 
-### Ngày 20 (Thứ 7, nhiều thời gian hơn) — Trang cho tester
-- [ ] `GET /install/{token}` trả HTML đơn giản (tên App/version + nút tải) hoặc JSON (tùy thời gian — JSON là đủ cho mục tiêu học backend)
-- [ ] API danh sách build của 1 App cho Tester đã đăng nhập (khác link công khai — cần JWT, trả đúng build Tester được mời xem)
+### Ngày 20 (Thứ 7, nhiều thời gian hơn) — OpenTelemetry: metric
+- [ ] `Meter` riêng: counter build upload (thành công/thất bại), counter lượt tải, histogram thời gian upload
+- [ ] Xem bằng `dotnet-counters monitor` (không cần dựng thêm hạ tầng); muốn có biểu đồ thì thêm Prometheus + Grafana (tùy chọn)
+- [ ] Job Hangfire chạy ở thời điểm khác nên không tự nối vào trace của request upload → tự tạo span trong job, đủ để thấy job chậm ở đâu
+- [ ] Phân biệt: trace = theo dõi 1 request cụ thể xuyên suốt; metric = số liệu tổng hợp theo thời gian
 
-**Mục tiêu cuối ngày:** Tester đăng nhập thấy đúng danh sách build của App được mời; người ngoài có link công khai tải được không cần đăng nhập.
+**Mục tiêu cuối ngày:** upload vài build (có cái lỗi) → `dotnet-counters` thấy counter tăng đúng số; giải thích được trace/metric bằng ví dụ của Hangar.
 
 ### Ngày 21 (Chủ nhật, nhiều thời gian hơn) — Test lại + tổng kết tuần
-- [ ] Test toàn bộ luồng: CI upload bằng ApiKey → tạo InstallLink → tester tải qua link công khai → giới hạn lượt tải hoạt động đúng
-- [ ] Giải thích được: vì sao CI cần cơ chế xác thực khác JWT (không có "người" đăng nhập); vì sao InstallLink dùng Token ngẫu nhiên thay vì Id số
+- [ ] Toàn bộ: cache hit/miss + invalidate đúng → rate limit chặn đúng → health báo đúng khi tắt từng dependency → trace/metric hiện đúng
+- [ ] Giải thích được: cache invalidation khác TTL thế nào; vì sao tách `live`/`ready`; khi nào nhìn trace, khi nào nhìn metric
 
-**Mục tiêu cuối tuần (Tuần 6):** luồng "CI build → tester tải" hoạt động đầy đủ, kiểm soát đúng hạn dùng/giới hạn tải kể cả khi có concurrency.
-
----
-
-## Tuần 7: Background job, cache, giới hạn (Ngày 22-28)
-
-**Mục tiêu tuần:** việc nặng (đọc metadata, dọn dữ liệu cũ) chạy nền không làm chậm request chính; cache giảm tải đọc; rate limiting chặn được spam.
-
-### Ngày 22 (Thứ 2) — Cài Hangfire
-- [ ] `Hangfire.AspNetCore` + `Hangfire.PostgreSql`, dashboard `/hangfire` (bảo vệ bằng auth, không public)
-- [ ] Chuyển đọc metadata build (Ngày 12) từ xử lý đồng bộ trong request sang **background job** — upload trả `202 Accepted` ngay, metadata điền sau khi job chạy xong
-
-**Mục tiêu cuối ngày:** upload trả về nhanh, metadata điền sau vài giây qua job, xem được lịch sử job trên dashboard Hangfire.
-
-### Ngày 23 (Thứ 3) — Trạng thái xử lý Build
-- [ ] Thêm `Build.ProcessingStatus` (enum: `Pending`/`Processing`/`Ready`/`Failed`) — API trả đúng trạng thái, tester biết build "đang xử lý" chứ không phải lỗi
-- [ ] Job thất bại (file không đọc được metadata) → set `Failed`, lưu lý do, không để job throw im lặng
-
-**Mục tiêu cuối ngày:** upload file hỏng → build chuyển `Failed` kèm lý do rõ ràng, không "treo" ở `Pending` mãi.
-
-### Ngày 24 (Thứ 4) — Job dọn build cũ
-- [ ] Recurring job: với mỗi App, giữ N build mới nhất (policy cấu hình), build cũ hơn tự xóa (file MinIO + record DB)
-- [ ] Job này dùng `IgnoreQueryFilters()` — phải quét **toàn bộ** Organization, không bị global query filter (chỉ áp cho request có context) giới hạn — đúng tình huống lý thuyết đã ghi ở Ngày 21 Project 1, lần đầu thực sự dùng tới
-
-**Mục tiêu cuối ngày:** job xóa đúng build cũ vượt policy, verify bằng build giả lập vượt ngưỡng rồi trigger job thủ công qua dashboard Hangfire.
-
-### Ngày 25 (Thứ 5) — Redis cache
-- [ ] Thêm service `redis` vào `docker-compose.yml`, cài `Microsoft.Extensions.Caching.StackExchangeRedis`
-- [ ] Cache danh sách build mới nhất của 1 App (key gắn `AppId`) — `GET .../builds` đọc cache trước, miss mới query DB
-
-**Mục tiêu cuối ngày:** gọi lại `GET .../builds` lần 2 nhanh hơn rõ rệt, không query DB lần 2 (xem log xác nhận).
-
-### Ngày 26 (Thứ 6) — Cache invalidation
-- [ ] Upload/xóa build → tự xóa đúng cache key của `AppId` liên quan — không để cache cũ hiển thị sai sau khi có build mới
-- [ ] Giải thích: vì sao chọn invalidate-khi-thay-đổi thay vì chỉ để TTL ngắn tự hết hạn (build mới cần hiện ngay, không chấp nhận chờ)
-
-**Mục tiêu cuối ngày:** upload build mới → gọi lại list thấy ngay, không phải dữ liệu cache cũ.
-
-### Ngày 27 (Thứ 7, nhiều thời gian hơn) — Rate limiting
-- [ ] `Microsoft.AspNetCore.RateLimiting` — giới hạn `/install/{token}` theo IP (chặn spam vét cạn `MaxDownloads`), giới hạn `/api/ci/builds` theo ApiKey (chặn CI lỗi loop)
-- [ ] Trả `429` kèm header `Retry-After` đúng chuẩn
-
-**Mục tiêu cuối ngày:** spam vượt rate limit → `429` đúng kèm `Retry-After`; request bình thường không bị ảnh hưởng.
-
-### Ngày 28 (Chủ nhật, nhiều thời gian hơn) — Test lại + tổng kết tuần
-- [ ] Test toàn bộ: upload → job xử lý metadata nền → cache list → invalidate đúng khi đổi dữ liệu → job dọn build cũ đúng → rate limit chặn đúng
-- [ ] Giải thích được: khi nào nên xử lý nền thay vì xử lý ngay trong request; cache invalidation khác TTL thế nào
-
-**Mục tiêu cuối tuần (Tuần 7):** hệ thống chịu tải cơ bản tốt hơn hẳn, việc nặng không chặn request chính.
+**Mục tiêu cuối tuần (Tuần 7):** đọc nhanh hơn nhờ cache mà không sai dữ liệu, chặn được spam, biết ngay dependency nào hỏng và bước nào chậm.
 
 ---
 
-## Tuần 8: Quan sát và hoàn thiện (Ngày 29-35)
+## Tuần 8: Hoàn thiện + deploy (Ngày 22-28)
 
-**Mục tiêu tuần:** quan sát được hệ thống (trace/metric/health theo từng dependency), có integration test luồng chính, `docker compose up` chạy hết 4 service từ máy sạch — kết thúc Project chính (Hangar core).
+**Mục tiêu tuần:** có integration test luồng chính, `docker compose up` từ máy sạch chạy đủ mọi service, có số liệu benchmark thật, deploy lên VPS sau nginx với pipeline CI — kết thúc Hangar.
 
-### Ngày 29 (Thứ 2) — Health checks
-- [ ] `AddHealthChecks()` cho Postgres, Redis, MinIO (không chỉ "app còn sống" như Project 1 — kiểm tra từng dependency riêng) — `/health` trả chi tiết
+### Ngày 22 (Thứ 2) — Integration test
+- [ ] Project `tests/Hangar.IntegrationTests` (xUnit) + `WebApplicationFactory<Program>`; hạ tầng thật bằng `Testcontainers.PostgreSql`, `Testcontainers.Minio`, `Testcontainers.Redis` — không mock
+- [ ] File mẫu nhỏ trong test (IPA tự tạo đúng cấu trúc là dễ nhất); job Hangfire chạy bất đồng bộ → test chờ Build `Ready` có giới hạn thời gian, không `Thread.Sleep` cố định
+- [ ] Test luồng chính: tạo App → upload → `Ready` → tạo InstallLink `MaxDownloads = 1` → tải lần 1 `302`, lần 2 `410`
 
-**Mục tiêu cuối ngày:** tắt thử Redis → `/health` báo đúng dependency nào fail, không chỉ "Unhealthy" mù mờ.
+**Mục tiêu cuối ngày:** `dotnet test` pass trên máy không chạy sẵn container nào; chạy xong không để container rác (`docker ps -a`).
 
-### Ngày 30 (Thứ 3) — OpenTelemetry: trace
-- [ ] `OpenTelemetry.Extensions.Hosting` + exporter console (hoặc Jaeger/Zipkin để xem UI) — trace tự động HTTP request + EF Core query
-- [ ] Theo 1 request upload build từ đầu tới cuối qua trace
+### Ngày 23 (Thứ 3) — ERD + sơ đồ kiến trúc
+- [ ] Cập nhật `docs/erd.md` theo code thật (App, Build, InstallLink)
+- [ ] Sơ đồ kiến trúc (Mermaid): Client → API → Postgres / MinIO / Redis / Hangfire; sơ đồ luồng upload và luồng tải qua link
 
-**Mục tiêu cuối ngày:** xem được 1 trace hoàn chỉnh của request upload, chỉ ra bước nào chậm nhất.
+**Mục tiêu cuối ngày:** ERD + sơ đồ khớp đúng code (đối chiếu với migration cuối cùng).
 
-### Ngày 31 (Thứ 4) — OpenTelemetry: metric
-- [ ] Metric: số build upload/phút, tỷ lệ lỗi upload, latency endpoint tải
-- [ ] Phân biệt rõ với trace: trace = theo dõi 1 request cụ thể xuyên suốt; metric = số liệu tổng hợp theo thời gian, không gắn 1 request cụ thể
+### Ngày 24 (Thứ 4) — Docker Compose đầy đủ + README
+- [ ] Service `api` (build từ `docker/Dockerfile` có sẵn), migration tự chạy lúc khởi động, `depends_on` chờ Postgres healthy
+- [ ] Bẫy presigned URL (đã ghi từ Ngày 5): trong Docker, API gọi MinIO qua `minio:9000`, nhưng URL đưa cho người tải phải là địa chỉ máy ngoài gọi được → ký URL bằng endpoint công khai (không thể ký xong rồi thay host, vì host nằm trong chữ ký)
+- [ ] `docker compose down -v` rồi `up` lại từ volume trống → test luồng chính qua container thật (kiểm tra MinIO ghi được vào volume mới — image chạy non-root, xem ghi chú trong `docker-compose.yml`)
+- [ ] README: cách chạy, bảng endpoint, kiến trúc, ERD
 
-**Mục tiêu cuối ngày:** xem được số liệu tổng hợp thật; giải thích khác biệt trace/metric bằng đúng ví dụ project này.
+**Mục tiêu cuối ngày:** máy sạch: `docker compose up` → mọi service healthy; upload qua API trong container → tải được bằng presigned URL từ trình duyệt máy host.
 
-### Ngày 32 (Thứ 5) — Integration test
-- [ ] `Testcontainers.PostgreSql` (+ container Redis/MinIO nếu cần) — test chạy lên hạ tầng thật trong container tạm, không mock
-- [ ] `WebApplicationFactory` test luồng chính: tạo Organization → tạo App → upload build (file giả lập nhỏ) → tạo InstallLink → tải qua link
+### Ngày 25 (Thứ 5) — Benchmark bằng k6
+- [ ] Script k6 chạy bằng image `grafana/k6` (không cần cài; gọi API trên máy host qua `host.docker.internal`): `GET /api/apps/{appId}/builds` bật cache vs tắt cache; trang `/install/{token}`
+- [ ] Tắt rate limit khi đo (nếu không số liệu chỉ toàn `429`)
 
-**Mục tiêu cuối ngày:** `dotnet test` pass, tự dọn container sau khi xong (không để container rác).
+**Mục tiêu cuối ngày:** có bảng số liệu thật (RPS, p95 latency) có/không cache, kết luận bằng số chứ không bằng cảm giác.
 
-### Ngày 33 (Thứ 6) — Hoàn thiện ERD + kiến trúc
-- [ ] Cập nhật `docs/erd.md` đầy đủ domain hiện tại
-- [ ] Sơ đồ kiến trúc (Mermaid) luồng upload build: Client → API → MinIO + Postgres + Hangfire job nền
+### Ngày 26 (Thứ 6) — Deploy VPS + nginx
+- [ ] VPS (hoặc máy ảo/WSL giả lập): Docker Compose + nginx reverse proxy trước API, chỉ mở cổng 80/443
+- [ ] Bẫy upload: nginx mặc định chỉ nhận body 1MB (`client_max_body_size`) và buffer cả body trước khi chuyển tiếp (`proxy_request_buffering`) → phải chỉnh, nếu không streaming ở Ngày 4 mất tác dụng
+- [ ] `ForwardedHeaders` để rate limit (Ngày 17) thấy IP thật; MinIO cũng cần đường công khai cho presigned URL (qua nginx hoặc cổng riêng)
 
-**Mục tiêu cuối ngày:** ERD + sơ đồ kiến trúc phản ánh đúng code thật.
+**Mục tiêu cuối ngày:** từ máy khác upload file 250MB qua nginx → `201`; rate limit tính theo IP của máy gọi, không phải IP của nginx.
 
-### Ngày 34 (Thứ 7, nhiều thời gian hơn) — Docker Compose tổng + README
-- [ ] Gắn service `api` vào `docker-compose.yml` (giống Ngày 21 Project 1) — migration tự chạy lúc khởi động
-- [ ] `docker compose up` từ volume trống (Postgres + Redis + MinIO + api) → xác nhận chạy hết, test luồng chính qua container thật
-- [ ] README đầy đủ: cách chạy, bảng endpoint, kiến trúc, ERD
+### Ngày 27 (Thứ 7, nhiều thời gian hơn) — CI/CD bằng GitHub Actions
+- [ ] Workflow mỗi lần push/PR: build + chạy integration test (runner `ubuntu-latest` có sẵn Docker cho Testcontainers)
+- [ ] Build Docker image, đẩy lên GitHub Container Registry (`ghcr.io`); (tùy chọn) bước deploy tự động lên VPS qua SSH
+- [ ] Bí mật (mật khẩu DB/MinIO trên VPS, SSH key) để trong GitHub Secrets, không commit
 
-**Mục tiêu cuối ngày:** `docker compose up` từ máy sạch chạy được toàn bộ 4 service.
+**Mục tiêu cuối ngày:** push 1 commit → pipeline xanh; cố tình làm hỏng 1 test → pipeline đỏ và không đẩy image.
 
-### Ngày 35 (Chủ nhật, nhiều thời gian hơn) — Tổng kết Project chính
-- [ ] Rà lại toàn bộ tiêu chí (giống Ngày 21 Project 1) — đặc biệt rà kỹ phân quyền Owner/Developer/Tester ở **mọi** endpoint, dễ sót hơn Project 1 vì nhiều route hơn
-- [ ] Ghi nợ kỹ thuật (nếu có) mang vào Tuần 9-10
-
-**Mục tiêu cuối tuần (Tuần 8) — Tổng kết Project chính (Hangar core):** multi-tenant + resource-based auth + upload/lưu trữ + CI/install link + background job/cache/rate limit + observability đều hoạt động, verify qua Docker Compose từ máy sạch.
-
----
-
-## Tuần 9: Webhook — Độ tin cậy (Ngày 36-42)
-
-**Mục tiêu tuần:** khi có build mới, gửi được webhook cho endpoint đã đăng ký, không mất sự kiện dù gửi lỗi (outbox pattern), có ký xác thực (HMAC).
-
-### Ngày 36 (Thứ 2) — Entity + CRUD WebhookEndpoint
-- [ ] Entity `WebhookEndpoint` + migration
-- [ ] `POST/GET/DELETE /api/organizations/{orgId}/webhooks` (Owner) — `Secret` sinh tự động, trả về đúng 1 lần lúc tạo (giống ApiKey)
-
-**Mục tiêu cuối ngày:** CRUD webhook endpoint, secret chỉ hiện 1 lần.
-
-### Ngày 37 (Thứ 3) — Outbox pattern
-- [ ] Entity `OutboxEvent` + migration
-- [ ] Khi `Build` tạo thành công (Ngày 9) → ghi thêm 1 `OutboxEvent` (`EventType = "build.created"`) **trong cùng transaction** với việc tạo Build
-
-**Mục tiêu cuối ngày:** tạo build mới → có đúng 1 `OutboxEvent` tương ứng cùng transaction; giả lập lỗi giữa chừng → không có Build thiếu OutboxEvent hoặc ngược lại (vẫn là bài học transaction Ngày 15 Project 1, áp dụng vào bài toán mới).
-
-### Ngày 38 (Thứ 4) — Vì sao cần Outbox (lý thuyết + WebhookDelivery)
-- [ ] Giải thích vấn đề "dual write": gọi webhook trực tiếp ngay trong request (không qua Outbox) → ghi Build thành công nhưng gọi webhook lỗi mạng → mất sự kiện vĩnh viễn, không ai biết để gửi lại. Outbox tách "ghi sự kiện" (chắc chắn, cùng transaction) khỏi "gửi đi" (có thể lỗi, retry được vì sự kiện vẫn còn trong DB)
-- [ ] Entity `WebhookDelivery` + migration — mỗi lần thử gửi 1 `OutboxEvent` tới 1 `WebhookEndpoint` tạo 1 dòng
-
-**Mục tiêu cuối ngày:** giải thích được outbox pattern bằng đúng ví dụ Build/webhook của project này, không chỉ lý thuyết chung.
-
-### Ngày 39 (Thứ 5) — Worker đọc Outbox
-- [ ] Worker (Hangfire recurring job hoặc `BackgroundService` + `Channel<T>`) — định kỳ quét `OutboxEvent` chưa `ProcessedAtUtc`, với mỗi `WebhookEndpoint` active của Organization liên quan → tạo `WebhookDelivery`, gửi HTTP POST
-
-**Mục tiêu cuối ngày:** tạo build mới → trong vài giây, endpoint test (`webhook.site` hoặc endpoint giả lập local) nhận được request.
-
-### Ngày 40 (Thứ 6) — Ký HMAC
-- [ ] Ký payload bằng `WebhookEndpoint.Secret` (HMAC-SHA256), gửi kèm header (ví dụ `X-Hangar-Signature`)
-- [ ] Viết script mẫu "verify ở phía nhận" (dù Hangar không phải bên nhận) — tự tính lại HMAC từ payload+secret, so sánh header, không tin payload nếu không khớp
-
-**Mục tiêu cuối ngày:** verify thủ công xác nhận chữ ký HMAC đúng với payload thật đã gửi.
-
-### Ngày 41 (Thứ 7, nhiều thời gian hơn) — Test độ tin cậy
-- [ ] Giả lập webhook endpoint trả lỗi (500) hoặc timeout → `WebhookDelivery.Status = Failed`, không crash worker, không chặn delivery khác
-
-**Mục tiêu cuối ngày:** 1 endpoint lỗi không ảnh hưởng gửi webhook cho endpoint/Organization khác.
-
-### Ngày 42 (Chủ nhật, nhiều thời gian hơn) — Tổng kết tuần
-- [ ] Test lại toàn bộ: tạo build → outbox → worker gửi → verify HMAC đúng
-- [ ] Giải thích được: outbox giải quyết dual-write ra sao; vì sao cần ký HMAC
-
-**Mục tiêu cuối tuần (Tuần 9):** luồng webhook cơ bản tin cậy (không mất sự kiện dù gửi lỗi), có ký xác thực.
-
----
-
-## Tuần 10: Webhook — Retry và hoàn thiện (Ngày 43-49)
-
-**Mục tiêu tuần:** webhook tự retry hợp lý khi lỗi, có DLQ, chống xử lý trùng phía nhận (idempotency), có trang lịch sử + gửi lại thủ công, deploy thử + CI/CD, benchmark, hoàn thiện toàn bộ Giai đoạn 2.
-
-### Ngày 43 (Thứ 2) — Retry với exponential backoff
-- [ ] `WebhookDelivery` thêm `NextRetryAtUtc` — gửi thất bại thì chờ tăng dần (ví dụ 30s, 2 phút, 10 phút...), worker Ngày 39 chỉ lấy delivery có `NextRetryAtUtc <= now`
-- [ ] Giới hạn số lần retry tối đa (ví dụ 5), vượt quá → `Failed` vĩnh viễn
-
-**Mục tiêu cuối ngày:** endpoint lỗi liên tục → thời gian chờ giữa các lần retry tăng dần đúng, dừng đúng sau số lần giới hạn.
-
-### Ngày 44 (Thứ 3) — Dead-letter queue
-- [ ] Delivery vượt số lần retry → `Status = Failed` kèm đánh dấu đã hết retry (tái dùng field có sẵn, không tạo thêm entity không cần thiết)
-- [ ] `GET /api/organizations/{orgId}/webhooks/{id}/deliveries?status=Failed` — xem danh sách delivery "đã chết"
-
-**Mục tiêu cuối ngày:** lọc được delivery đã hết retry, phân biệt rõ với delivery đang chờ retry tiếp.
-
-### Ngày 45 (Thứ 4) — Idempotency phía nhận
-- [ ] Mỗi `WebhookDelivery` gửi kèm `EventId` cố định (= `OutboxEventId`, không đổi giữa các lần retry) — bên nhận dựa vào đây biết "đã xử lý sự kiện này chưa"
-- [ ] Viết hướng dẫn ngắn (README/docs) cho bên nhận: lưu `EventId` đã xử lý, bỏ qua nếu gặp lại
-
-**Mục tiêu cuối ngày:** chứng minh bằng ví dụ thật — cùng 1 `EventId` xuất hiện ở lần gửi đầu và lần retry, phía nhận có đủ thông tin chống xử lý trùng.
-
-### Ngày 46 (Thứ 5) — Trang lịch sử + gửi lại thủ công
-- [ ] `GET /api/organizations/{orgId}/webhooks/{id}/deliveries` — lịch sử đầy đủ (kể cả thành công), phân trang
-- [ ] `POST .../deliveries/{deliveryId}/redeliver` (Owner) — gửi lại 1 delivery đã fail, không chờ retry tự động
-
-**Mục tiêu cuối ngày:** xem lịch sử đầy đủ, gửi lại thủ công 1 delivery đã fail thành công.
-
-### Ngày 47 (Thứ 6) — Benchmark nhẹ bằng k6
-- [ ] Script k6 load test `GET .../builds` (có cache, Tuần 7) và `/install/{token}` — so sánh RPS/latency có cache vs tắt cache
-
-**Mục tiêu cuối ngày:** có số liệu benchmark thật (RPS, p95 latency), chứng minh bằng số liệu lợi ích cache đã làm ở Tuần 7.
-
-### Ngày 48 (Thứ 7, nhiều thời gian hơn) — Deploy VPS + CI/CD
-- [ ] Deploy thử lên VPS (hoặc máy local giả lập): Docker Compose + nginx reverse proxy
-- [ ] GitHub Actions: build + test (+ push image tùy chọn) — chạy pipeline thật
-
-**Mục tiêu cuối ngày:** pipeline CI chạy xanh; app truy cập qua nginx, không trực tiếp port container.
-
-### Ngày 49 (Chủ nhật, nhiều thời gian hơn) — Hoàn thiện README, demo, tổng kết Giai đoạn 2
+### Ngày 28 (Chủ nhật, nhiều thời gian hơn) — Tổng kết Hangar
 - [ ] README cuối: mô tả, cách chạy, ERD, kiến trúc, endpoint, demo luồng chính
-- [ ] Đối chiếu "Mốc kiểm tra cuối Giai đoạn 2" ở `dotnet-roadmap.md` — giải thích được global query filter, resource-based vs permission tĩnh, outbox, HMAC, idempotency, trace vs metric
-- [ ] Cập nhật bảng tiến độ Tuần 4-10 ở `dotnet-roadmap.md`
-- [ ] Ghi nợ kỹ thuật (nếu có) mang sang phần tiếp theo lộ trình
+- [ ] Đối chiếu "Mốc kiểm tra cuối Giai đoạn 2" trong `dotnet-roadmap.md`
+- [ ] Cập nhật bảng tiến độ Tuần 5-8 trong `dotnet-roadmap.md`; ghi nợ kỹ thuật (nếu có)
 
-**Mục tiêu cuối tuần (Tuần 10) — Tổng kết Giai đoạn 2:** toàn bộ Hangar (multi-tenant, upload/CI/install link, background job/cache/rate limit, observability, webhook tin cậy) chạy được qua Docker Compose, có demo, README đầy đủ, giải thích được mọi mốc kiểm tra.
+**Mục tiêu cuối tuần (Tuần 8) — Tổng kết Hangar:** upload/lưu trữ, link cài đặt, job nền, cache, rate limit, quan sát, test, deploy đều chạy được qua Docker Compose từ máy sạch và trên VPS, có số liệu benchmark, giải thích được từng quyết định đã ghi.
+
+> Nếu trễ tiến độ: cắt theo thứ tự metric (Ngày 20) → k6 (Ngày 25) → deploy tự động qua SSH (giữ bản deploy tay). Không cắt streaming upload, concurrency lượt tải, cache invalidation, integration test — đây là phần cốt lõi của Hangar.
